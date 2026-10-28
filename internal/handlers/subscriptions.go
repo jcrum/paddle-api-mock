@@ -12,13 +12,12 @@ import (
 )
 
 type SubscriptionsHandler struct {
-	Store    *store.Store
-	Webhook  *webhook.Notifier
+	Store   *store.Store
+	Webhook *webhook.Notifier
 }
 
 func (h *SubscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/v1/subscriptions")
-	path = strings.TrimPrefix(path, "/")
+	path := resourcePath(r, "subscriptions")
 
 	if path == "" {
 		switch r.Method {
@@ -64,31 +63,11 @@ func (h *SubscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *SubscriptionsHandler) list(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
 	subs := h.Store.ListSubscriptions()
-
-	// Filter by customer_id if provided
-	if cid := r.URL.Query().Get("customer_id"); cid != "" {
-		filtered := make([]*models.Subscription, 0)
-		for _, s := range subs {
-			if s.CustomerID == cid {
-				filtered = append(filtered, s)
-			}
-		}
-		subs = filtered
-	}
-
-	// Filter by status if provided
-	if status := r.URL.Query().Get("status"); status != "" {
-		filtered := make([]*models.Subscription, 0)
-		for _, s := range subs {
-			if s.Status == status {
-				filtered = append(filtered, s)
-			}
-		}
-		subs = filtered
-	}
-
-	respondList(w, r, subs, len(subs))
+	subs = filterIn(subs, query.Get("customer_id"), func(s *models.Subscription) string { return s.CustomerID })
+	subs = filterIn(subs, query.Get("status"), func(s *models.Subscription) string { return s.Status })
+	respondPage(w, r, subs, func(s *models.Subscription) string { return s.ID }, standardList)
 }
 
 func (h *SubscriptionsHandler) get(w http.ResponseWriter, r *http.Request, id string) {
@@ -100,6 +79,8 @@ func (h *SubscriptionsHandler) get(w http.ResponseWriter, r *http.Request, id st
 	respond(w, r, http.StatusOK, sub)
 }
 
+// create is a test helper of the original mock (real Paddle creates subscriptions from checkouts; see
+// POST /admin/checkout).
 func (h *SubscriptionsHandler) create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateSubscriptionRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -112,102 +93,20 @@ func (h *SubscriptionsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify customer exists
 	if _, ok := h.Store.GetCustomer(req.CustomerID); !ok {
 		respondError(w, r, http.StatusBadRequest, "request_error", "validation_error", "Customer not found")
 		return
 	}
 
-	now := time.Now().UTC()
-	currency := req.CurrencyCode
-	if currency == "" {
-		currency = "USD"
-	}
-	collectionMode := req.CollectionMode
-	if collectionMode == "" {
-		collectionMode = "automatic"
+	sub, detail, err := buildSubscription(h.Store, req.CustomerID, nil, req.Items, req.CurrencyCode, req.CollectionMode, req.CustomData)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "request_error", "validation_error", detail)
+		return
 	}
 
-	sub := &models.Subscription{
-		ID:             store.NextID("sub"),
-		Status:         "trialing",
-		CustomerID:     req.CustomerID,
-		CurrencyCode:   currency,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		StartedAt:      &now,
-		CollectionMode: collectionMode,
-		CustomData:     req.CustomData,
-		Items:          make([]models.SubscriptionItem, 0),
-	}
-	if sub.CustomData == nil {
-		sub.CustomData = map[string]string{}
-	}
+	// Initial transaction
+	newTransaction(h.Store, sub, subscriptionItemsToTransaction(sub), sub.CurrentBillingPeriod, "subscription_recurring", "completed")
 
-	for _, item := range req.Items {
-		price, ok := h.Store.GetPrice(item.PriceID)
-		if !ok {
-			respondError(w, r, http.StatusBadRequest, "request_error", "validation_error", "Price not found: "+item.PriceID)
-			return
-		}
-
-		qty := item.Quantity
-		if qty == 0 {
-			qty = 1
-		}
-
-		subItem := models.SubscriptionItem{
-			Status:    "trialing",
-			Quantity:  qty,
-			Recurring: true,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Price:     *price,
-		}
-
-		if price.BillingCycle != nil {
-			sub.BillingCycle = *price.BillingCycle
-		}
-
-		if price.TrialPeriod != nil {
-			trialEnd := addPeriod(now, price.TrialPeriod.Interval, price.TrialPeriod.Frequency)
-			subItem.TrialDates = &models.BillingPeriodDates{
-				StartsAt: now,
-				EndsAt:   trialEnd,
-			}
-			subItem.NextBilledAt = &trialEnd
-			sub.NextBilledAt = &trialEnd
-			sub.CurrentBillingPeriod = &models.BillingPeriodDates{
-				StartsAt: now,
-				EndsAt:   trialEnd,
-			}
-		} else {
-			// No trial — active immediately
-			sub.Status = "active"
-			subItem.Status = "active"
-			nextBill := addPeriod(now, price.BillingCycle.Interval, price.BillingCycle.Frequency)
-			subItem.NextBilledAt = &nextBill
-			sub.NextBilledAt = &nextBill
-			sub.FirstBilledAt = &now
-			sub.CurrentBillingPeriod = &models.BillingPeriodDates{
-				StartsAt: now,
-				EndsAt:   nextBill,
-			}
-		}
-
-		if prod, ok := h.Store.GetProduct(price.ProductID); ok {
-			subItem.Product = prod
-		}
-
-		sub.Items = append(sub.Items, subItem)
-	}
-
-	h.Store.SetSubscription(sub)
-
-	// Create initial transaction
-	h.createTransaction(sub, "subscription_recurring")
-
-	// Fire webhook
 	h.Webhook.Fire("subscription.created", sub)
 
 	respond(w, r, http.StatusCreated, sub)
@@ -311,27 +210,16 @@ func (h *SubscriptionsHandler) activate(w http.ResponseWriter, r *http.Request, 
 	now := time.Now().UTC()
 	sub.Status = "active"
 	sub.FirstBilledAt = &now
-	sub.UpdatedAt = now
-
-	// Set next billing period
-	nextBill := addPeriod(now, sub.BillingCycle.Interval, sub.BillingCycle.Frequency)
-	sub.NextBilledAt = &nextBill
-	sub.CurrentBillingPeriod = &models.BillingPeriodDates{
-		StartsAt: now,
-		EndsAt:   nextBill,
-	}
-
+	startNextPeriod(sub, now)
 	for i := range sub.Items {
 		sub.Items[i].Status = "active"
 		sub.Items[i].TrialDates = nil
-		sub.Items[i].NextBilledAt = &nextBill
-		sub.Items[i].UpdatedAt = now
 	}
 
 	h.Store.SetSubscription(sub)
 
-	// Create transaction for first billing
-	h.createTransaction(sub, "subscription_recurring")
+	// Transaction for the first billing
+	newTransaction(h.Store, sub, subscriptionItemsToTransaction(sub), sub.CurrentBillingPeriod, "subscription_recurring", "completed")
 
 	h.Webhook.Fire("subscription.activated", sub)
 
@@ -351,23 +239,7 @@ func (h *SubscriptionsHandler) charge(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	now := time.Now().UTC()
-	txn := &models.Transaction{
-		ID:             store.NextID("txn"),
-		Status:         "completed",
-		CustomerID:     sub.CustomerID,
-		SubscriptionID: &sub.ID,
-		CurrencyCode:   sub.CurrencyCode,
-		CollectionMode: sub.CollectionMode,
-		Origin:         "subscription_charge",
-		Items:          make([]models.TransactionItem, 0),
-		BilledAt:       &now,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		CustomData:     map[string]string{},
-	}
-
-	var totalAmount int
+	items := make([]models.TransactionItem, 0, len(req.Items))
 	for _, item := range req.Items {
 		price, ok := h.Store.GetPrice(item.PriceID)
 		if !ok {
@@ -378,76 +250,17 @@ func (h *SubscriptionsHandler) charge(w http.ResponseWriter, r *http.Request, id
 		if qty == 0 {
 			qty = 1
 		}
-		txnItem := models.TransactionItem{
-			PriceID:  price.ID,
-			Quantity: qty,
-			Price:    *price,
-		}
+		txnItem := models.TransactionItem{PriceID: price.ID, Quantity: qty, Price: *price}
 		if prod, ok := h.Store.GetProduct(price.ProductID); ok {
 			txnItem.Product = prod
 		}
-		txn.Items = append(txn.Items, txnItem)
-		totalAmount += parseAmount(price.UnitPrice.Amount) * qty
+		items = append(items, txnItem)
 	}
 
-	total := formatAmount(totalAmount)
-	txn.Details = models.TransactionDetails{
-		Totals: models.TransactionTotals{
-			Subtotal:     total,
-			Tax:          "0",
-			Total:        total,
-			GrandTotal:   total,
-			CurrencyCode: sub.CurrencyCode,
-		},
-	}
-
-	h.Store.SetTransaction(txn)
+	txn := newTransaction(h.Store, sub, items, nil, "subscription_charge", "completed")
 	h.Webhook.Fire("transaction.completed", txn)
 
 	respond(w, r, http.StatusCreated, sub)
-}
-
-func (h *SubscriptionsHandler) createTransaction(sub *models.Subscription, origin string) {
-	now := time.Now().UTC()
-	txn := &models.Transaction{
-		ID:             store.NextID("txn"),
-		Status:         "completed",
-		CustomerID:     sub.CustomerID,
-		SubscriptionID: &sub.ID,
-		CurrencyCode:   sub.CurrencyCode,
-		CollectionMode: sub.CollectionMode,
-		Origin:         origin,
-		Items:          make([]models.TransactionItem, 0),
-		BilledAt:       &now,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		CustomData:     map[string]string{},
-	}
-
-	var totalAmount int
-	for _, item := range sub.Items {
-		txnItem := models.TransactionItem{
-			PriceID:  item.Price.ID,
-			Quantity: item.Quantity,
-			Price:    item.Price,
-			Product:  item.Product,
-		}
-		txn.Items = append(txn.Items, txnItem)
-		totalAmount += parseAmount(item.Price.UnitPrice.Amount) * item.Quantity
-	}
-
-	total := formatAmount(totalAmount)
-	txn.Details = models.TransactionDetails{
-		Totals: models.TransactionTotals{
-			Subtotal:     total,
-			Tax:          "0",
-			Total:        total,
-			GrandTotal:   total,
-			CurrencyCode: sub.CurrencyCode,
-		},
-	}
-
-	h.Store.SetTransaction(txn)
 }
 
 func addPeriod(t time.Time, interval string, frequency int) time.Time {

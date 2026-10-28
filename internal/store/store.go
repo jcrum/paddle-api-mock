@@ -24,6 +24,8 @@ type Store struct {
 	Customers            map[string]*models.Customer
 	Subscriptions        map[string]*models.Subscription
 	Transactions         map[string]*models.Transaction
+	Addresses            map[string]*models.Address
+	Adjustments          map[string]*models.Adjustment
 	Events               []*models.Event
 	NotificationSettings map[string]*models.NotificationSetting
 }
@@ -35,6 +37,8 @@ func New() *Store {
 		Customers:            make(map[string]*models.Customer),
 		Subscriptions:        make(map[string]*models.Subscription),
 		Transactions:         make(map[string]*models.Transaction),
+		Addresses:            make(map[string]*models.Address),
+		Adjustments:          make(map[string]*models.Adjustment),
 		Events:               make([]*models.Event, 0),
 		NotificationSettings: make(map[string]*models.NotificationSetting),
 	}
@@ -49,6 +53,8 @@ func (s *Store) Reset() {
 	s.Customers = make(map[string]*models.Customer)
 	s.Subscriptions = make(map[string]*models.Subscription)
 	s.Transactions = make(map[string]*models.Transaction)
+	s.Addresses = make(map[string]*models.Address)
+	s.Adjustments = make(map[string]*models.Adjustment)
 	s.Events = make([]*models.Event, 0)
 	s.NotificationSettings = make(map[string]*models.NotificationSetting)
 }
@@ -126,6 +132,58 @@ func (s *Store) SetCustomer(c *models.Customer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Customers[c.ID] = c
+}
+
+// FindCustomerByEmail returns the customer with this email, as Paddle Checkout reuses a customer by email.
+func (s *Store) FindCustomerByEmail(email string) (*models.Customer, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.Customers {
+		if c.Email == email {
+			return c, true
+		}
+	}
+	return nil, false
+}
+
+// --- Addresses ---
+
+func (s *Store) GetAddress(id string) (*models.Address, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.Addresses[id]
+	return a, ok
+}
+
+func (s *Store) SetAddress(a *models.Address) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Addresses[a.ID] = a
+}
+
+// --- Adjustments ---
+
+func (s *Store) GetAdjustment(id string) (*models.Adjustment, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.Adjustments[id]
+	return a, ok
+}
+
+func (s *Store) ListAdjustments() []*models.Adjustment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*models.Adjustment, 0, len(s.Adjustments))
+	for _, a := range s.Adjustments {
+		result = append(result, a)
+	}
+	return result
+}
+
+func (s *Store) SetAdjustment(a *models.Adjustment) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Adjustments[a.ID] = a
 }
 
 // --- Subscriptions ---

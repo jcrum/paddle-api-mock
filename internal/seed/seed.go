@@ -26,11 +26,11 @@ func Load(s *store.Store) {
 	// Price
 	monthlyName := "Monthly"
 	s.SetPrice(&models.Price{
-		ID:        "pri_yieldly_monthly",
-		ProductID: "prod_yieldly_base",
-		Name:      &monthlyName,
+		ID:          "pri_yieldly_monthly",
+		ProductID:   "prod_yieldly_base",
+		Name:        &monthlyName,
 		Description: "$5.00/month with 3-month trial",
-		Type:      "standard",
+		Type:        "standard",
 		BillingCycle: &models.BillingCycle{
 			Interval:  "month",
 			Frequency: 1,
@@ -105,11 +105,11 @@ func Load(s *store.Store) {
 		NextBilledAt: &trialEnd,
 		Items: []models.SubscriptionItem{
 			{
-				Status:    "trialing",
-				Quantity:  1,
-				Recurring: true,
-				CreatedAt: now,
-				UpdatedAt: now,
+				Status:       "trialing",
+				Quantity:     1,
+				Recurring:    true,
+				CreatedAt:    now,
+				UpdatedAt:    now,
 				NextBilledAt: &trialEnd,
 				TrialDates: &models.BillingPeriodDates{
 					StartsAt: now,

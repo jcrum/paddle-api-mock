@@ -35,11 +35,16 @@ func JSON(next http.Handler) http.Handler {
 	})
 }
 
-// Auth returns middleware that validates the Bearer token on /v1/ paths.
+// public paths need no API key: test helpers, the health check and the paddle.js stand-in.
+func public(path string) bool {
+	return strings.HasPrefix(path, "/admin/") || path == "/ping" || path == "/paddle.js"
+}
+
+// Auth returns middleware that validates the Bearer token on every API path (with or without /v1).
 func Auth(apiKey string, noAuth bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if noAuth || !strings.HasPrefix(r.URL.Path, "/v1/") {
+			if noAuth || public(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}

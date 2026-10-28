@@ -30,13 +30,19 @@ func New(s *store.Store, signingSecret string) *Notifier {
 	}
 }
 
-// Fire creates an event and sends it to all registered webhook endpoints.
+// Fire creates an event and sends it to all registered webhook endpoints. The event keeps a snapshot of data as
+// it is now, as Paddle's events do; later changes to the entity do not change the event.
 func (n *Notifier) Fire(eventType string, data interface{}) {
+	snapshot, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("webhook: failed to marshal event data: %v", err)
+		return
+	}
 	event := &models.Event{
 		EventID:    store.NextID("evt"),
 		EventType:  eventType,
 		OccurredAt: time.Now().UTC(),
-		Data:       data,
+		Data:       snapshot,
 	}
 	n.Store.AddEvent(event)
 

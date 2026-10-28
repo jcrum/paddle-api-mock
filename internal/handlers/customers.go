@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/vlah-software-house/paddle-api-mock/internal/models"
@@ -14,8 +13,7 @@ type CustomersHandler struct {
 }
 
 func (h *CustomersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/v1/customers")
-	path = strings.TrimPrefix(path, "/")
+	path := resourcePath(r, "customers")
 
 	if path == "" {
 		switch r.Method {
@@ -43,7 +41,7 @@ func (h *CustomersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *CustomersHandler) list(w http.ResponseWriter, r *http.Request) {
 	customers := h.Store.ListCustomers()
-	respondList(w, r, customers, len(customers))
+	respondPage(w, r, customers, func(c *models.Customer) string { return c.ID }, standardList)
 }
 
 func (h *CustomersHandler) get(w http.ResponseWriter, r *http.Request, id string) {

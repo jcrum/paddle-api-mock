@@ -13,8 +13,7 @@ type TransactionsHandler struct {
 }
 
 func (h *TransactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/v1/transactions")
-	path = strings.TrimPrefix(path, "/")
+	path := resourcePath(r, "transactions")
 
 	if r.Method != http.MethodGet {
 		respondError(w, r, http.StatusMethodNotAllowed, "request_error", "method_not_allowed", "Method not allowed")
@@ -30,31 +29,21 @@ func (h *TransactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *TransactionsHandler) list(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
 	txns := h.Store.ListTransactions()
-
-	// Filter by subscription_id
-	if subID := r.URL.Query().Get("subscription_id"); subID != "" {
-		filtered := make([]*models.Transaction, 0)
-		for _, t := range txns {
-			if t.SubscriptionID != nil && *t.SubscriptionID == subID {
-				filtered = append(filtered, t)
-			}
+	txns = filterIn(txns, query.Get("subscription_id"), func(t *models.Transaction) string {
+		if t.SubscriptionID == nil {
+			return "null"
 		}
-		txns = filtered
+		return *t.SubscriptionID
+	})
+	txns = filterIn(txns, query.Get("customer_id"), func(t *models.Transaction) string { return t.CustomerID })
+	txns = filterIn(txns, query.Get("status"), func(t *models.Transaction) string { return t.Status })
+	presented := make([]*models.Transaction, 0, len(txns))
+	for _, t := range txns {
+		presented = append(presented, h.present(t, query.Get("include")))
 	}
-
-	// Filter by customer_id
-	if cid := r.URL.Query().Get("customer_id"); cid != "" {
-		filtered := make([]*models.Transaction, 0)
-		for _, t := range txns {
-			if t.CustomerID == cid {
-				filtered = append(filtered, t)
-			}
-		}
-		txns = filtered
-	}
-
-	respondList(w, r, txns, len(txns))
+	respondPage(w, r, presented, func(t *models.Transaction) string { return t.ID }, transactionList)
 }
 
 func (h *TransactionsHandler) get(w http.ResponseWriter, r *http.Request, id string) {
@@ -63,5 +52,17 @@ func (h *TransactionsHandler) get(w http.ResponseWriter, r *http.Request, id str
 		respondError(w, r, http.StatusNotFound, "request_error", "not_found", "Transaction not found")
 		return
 	}
-	respond(w, r, http.StatusOK, txn)
+	respond(w, r, http.StatusOK, h.present(txn, r.URL.Query().Get("include")))
+}
+
+// present returns a copy with the related address when include=address asks for it.
+func (h *TransactionsHandler) present(txn *models.Transaction, include string) *models.Transaction {
+	copied := *txn
+	copied.Address = nil
+	if strings.Contains(include, "address") && txn.AddressID != nil {
+		if address, ok := h.Store.GetAddress(*txn.AddressID); ok {
+			copied.Address = address
+		}
+	}
+	return &copied
 }

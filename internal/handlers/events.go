@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/vlah-software-house/paddle-api-mock/internal/models"
@@ -18,8 +17,8 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusMethodNotAllowed, "request_error", "method_not_allowed", "Method not allowed")
 		return
 	}
-	events := h.Store.ListEvents()
-	respondList(w, r, events, len(events))
+	events := filterIn(h.Store.ListEvents(), r.URL.Query().Get("event_type"), func(e *models.Event) string { return e.EventType })
+	respondPage(w, r, events, func(e *models.Event) string { return e.EventID }, standardList)
 }
 
 type NotificationSettingsHandler struct {
@@ -27,8 +26,6 @@ type NotificationSettingsHandler struct {
 }
 
 func (h *NotificationSettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/v1/notification-settings")
-	path = strings.TrimPrefix(path, "/")
 
 	switch r.Method {
 	case http.MethodGet:
