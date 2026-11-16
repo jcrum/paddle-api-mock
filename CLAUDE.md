@@ -2,7 +2,7 @@
 
 **Reference:** This follows the same architecture as [etsy-mock-api](https://github.com/vlah-software-house/etsy-mock-api) — standalone Go binary, in-memory store, seed data, optional auth, admin reset endpoint.
 
-**Purpose:** The consuming application (Yieldly) integrates Paddle for subscription billing. This mock lets us run E2E tests and develop locally without hitting Paddle's sandbox. The mock must be able to:
+**Purpose:** Paxfish uses this mock for local development and tests (`pfcrm` and the apps' checkout page) instead of Paddle's sandbox; the seed data matches Yieldly's pricing model. The mock:
 1. Simulate the Paddle checkout flow (return a transaction with subscription)
 2. Accept and respond to Paddle Billing API calls
 3. Fire webhook payloads to a configurable callback URL when state changes
@@ -10,11 +10,11 @@
 
 ---
 
-### API Endpoints to Implement
+### API surface
 
-Base all endpoints on the [Paddle Billing API](https://developer.paddle.com/api-reference/overview). Use the `/v1/` prefix like real Paddle.
+Endpoints follow the [Paddle Billing API](https://developer.paddle.com/api-reference/overview). Real Paddle paths have no version prefix; `/v1/` is kept as an alias for existing consumers. `GAPS.md` records each difference from real Paddle that has been closed.
 
-**Products & Prices (read-only, seeded):**
+**Products & Prices (seeded; also `POST /products`, `POST /prices`, `PATCH /prices/{id}`, and `GET`/`POST /adjustments` — see `GAPS.md`):**
 - `GET /v1/products` — list products
 - `GET /v1/products/{id}` — get product
 - `GET /v1/prices` — list prices
@@ -97,6 +97,7 @@ Include Paddle's `Paddle-Signature` header using a configurable signing secret (
 -no-seed       Start with empty store (default: false)
 -webhook-url   Default webhook URL to register on startup (e.g., http://localhost:8080/api/paddle/webhooks)
 -signing-secret Webhook signing secret (default: pdl_test_signing_secret)
+-api-key       API key for authentication (default: test_paddle_api_key)
 ```
 
 ---
@@ -116,5 +117,3 @@ When auth is enabled, require `Authorization: Bearer {api_key}` header on all `/
 - **Subscription status machine**: `trialing → active → past_due → canceled` (and `paused` if needed)
 
 ---
-
-That's it. Create the project repo, drop this into `CLAUDE.md`, and point Claude at it. The mock will be self-contained and ready for Yieldly's E2E tests.
